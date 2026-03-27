@@ -52,5 +52,5 @@ Video → Detection → Tracking → Logic → Result
 
 ---
 
-## 🎯 Goal
+##  Goal
 To build a smart system that can detect traffic accidents automatically and help improve emergency response time.
