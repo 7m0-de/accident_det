@@ -1,13 +1,13 @@
-# AI Accident Detection System 🚗🔥
+# AI Accident Detection System 
 
-## 📌 Overview
+##  Overview
 This project aims to build an AI system that detects traffic accidents from video footage using computer vision and intelligent logic.
 
 The system analyzes vehicle movement and behavior to determine whether an accident has occurred.
 
 ---
 
-## ⚙️ Features
+##  Features
 - Vehicle detection using YOLO
 - Multi-object tracking (ByteTrack)
 - Accident detection logic (based on speed & distance)
@@ -15,12 +15,12 @@ The system analyzes vehicle movement and behavior to determine whether an accide
 
 ---
 
-## 🧠 How It Works
+##  How It Works
 Video → Detection → Tracking → Logic → Result
 
 ---
 
-## 👥 Team
+##  Team
 - Mohammed — Leader, Training, Logic
 - Hassan — Logic, Training support
 - Ayman — YOLO + Tracking
@@ -29,7 +29,7 @@ Video → Detection → Tracking → Logic → Result
 
 ---
 
-## 🗓️ Project Plan
+##  Project Plan
 - Week 1–2: Detection + Tracking
 - Week 3: Logic implementation
 - Week 4: Integration & testing
@@ -37,14 +37,14 @@ Video → Detection → Tracking → Logic → Result
 
 ---
 
-## 🚀 Future Work
+##  Future Work
 - Risk level prediction (low / medium / high)
 - Emergency alert system
 - Improved AI model accuracy
 
 ---
 
-## 🛠️ Technologies
+##  Technologies
 - Python
 - PyTorch
 - YOLO
