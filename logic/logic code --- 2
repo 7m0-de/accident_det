@@ -1,0 +1,335 @@
+# هذا الكود قد يكون فيه مشكله لكنه متطور اكثر من الاخر ولم اتمكن من استكمال الحل او تطبيق لان فترتي مجانية لتطبيقة على كولاب نفذت
+
+# -----------------------خطوة اولى
+# ====== تثبيت المكتبات — شغل هذا أول شي ======
+!pip install ultralytics
+
+#-----------------------------خطوة الثانية
+# ====== استيراد المكتبات ======
+from ultralytics import YOLO   # مكتبة يولو
+import cv2                     # مكتبة معالجة الفيديو
+import time                    # مكتبة الوقت — نحتاجها للتوقف الطويل
+from google.colab import files # مكتبة كولاب — للرفع والتحميل
+
+
+#---------------------------خطوة الثالثة
+import cv2
+import time
+from google.colab import files
+from ultralytics import YOLO
+import sys # لإضافة الخروج المبكر
+
+# ================================================
+# الإعدادات — تكدر تعدل الأرقام هنه حسب الفيديو
+# ================================================
+PROXIMITY_THRESHOLD = 80  # إذا المسافة بين سيارتين أقل من 80 بكسل = خطر
+STOP_THRESHOLD = 2  # إذا السيارة تحركت أقل من 2 بكسل = وقفت
+LONG_STOP_SECONDS = 60  # إذا السيارة واقفة أكثر من 60 ثواني = مشكلة
+CAR_CLASS_ID = 2  # رقم كلاس السيارة بيولو — 2 = car
+
+# ذاكرة النظام — تحفظ موقع كل سيارة من الفريم الفايت
+previous_positions = {}
+
+# ذاكرة الوقت — تحفظ متى وقفت كل سيارة
+stop_timers = {}
+
+# ================================================
+# دوال الحساب — الرياضيات اللي نحتاجها
+# ================================================
+
+def get_center(box):
+    # تحسب مركز الصندوق
+    # box = [x1, y1, x2, y2]
+    cx = (box[0] + box[2]) / 2  # منتصف أفقي
+    cy = (box[1] + box[3]) / 2  # منتصف عمودي
+    return cx, cy
+
+def get_distance(box1, box2):
+    # تحسب المسافة بين مركزين سيارتين
+    cx1, cy1 = get_center(box1)
+    cx2, cy2 = get_center(box2)
+    # قانون المسافة بين نقطتين
+    return ((cx1 - cx2)**2 + (cy1 - cy2)**2) ** 0.5
+
+def get_intersection(box1, box2):
+    # تحسب مقدار تداخل صندوقين
+    # إذا النتيجة أكبر من صفر = الصندوقين يتداخلون = اصطدام
+    ix1 = max(box1[0], box2[0])
+    iy1 = max(box1[1], box2[1])
+    ix2 = min(box1[2], box2[2])
+    iy2 = min(box1[3], box2[3])
+    return max(0, ix2 - ix1) * max(0, iy2 - iy1)
+
+# ================================================
+# دوال المنطق — هنه نقرر شو صاير
+# ================================================
+
+def check_sudden_stop(obj_id, box):
+    # نفحص إذا السيارة وقفت فجأة
+    # نقارن موقعها الحالي مع موقعها بالفريم الفايت
+    cx, cy = get_center(box)
+
+    if obj_id in previous_positions:
+        # اشلون السيارة تحركت من الفريم الفايت؟
+        prev_cx, prev_cy = previous_positions[obj_id]
+        dist = ((cx - prev_cx)**2 + (cy - prev_cy)**2) ** 0.5
+
+        if dist < STOP_THRESHOLD:
+            # السيارة ما تحركت — يعني وقفت فجأة
+            previous_positions[obj_id] = (cx, cy)
+            return {
+                "level": "MEDIUM",
+                "type": "SUDDEN_STOP",
+                "message": f"⚠ توقف مفاجئ → سيارة {obj_id}",
+                "color": (0, 0, 255)  # أحمر
+            }
+
+    # نحفظ الموقع الحالي للفريم الجاي
+    previous_positions[obj_id] = (cx, cy)
+    return None  # ما صار شي
+
+def check_long_stop(obj_id, box):
+    # نفحص إذا السيارة واقفة مدة طويلة
+    # نستخدم الوقت الحقيقي هنه مو الفريمات
+    cx, cy = get_center(box)
+
+    if obj_id in previous_positions:
+        prev_cx, prev_cy = previous_positions[obj_id]
+        dist = ((cx - prev_cx)**2 + (cy - prev_cy)**2) ** 0.5
+
+        if dist < STOP_THRESHOLD:
+            # السيارة واقفة — نشوف من متى
+
+            if obj_id not in stop_timers:
+                # أول مرة نشوف السيارة واقفة — نبدأ العداد
+                stop_timers[obj_id] = time.time()
+
+            # چم ثانية مرت من لما وقفت؟
+            elapsed = time.time() - stop_timers[obj_id]
+
+            if elapsed > LONG_STOP_SECONDS:
+                # واقفة أكثر من الحد المسموح
+                return {
+                    "level": "HIGH",
+                    "type": "LONG_STOP",
+                    "message": f"🔴 توقف طويل → سيارة {obj_id} واقفة {int(elapsed)} ثانية!",
+                    "color": (0, 0, 200)  # أحمر غامق
+                }
+        else:
+            # السيارة تحركت — نمسح العداد مالتها
+            stop_timers.pop(obj_id, None)
+
+    return None  # ما صار شي
+
+def check_pair(id1, box1, id2, box2):
+    # نفحص العلاقة بين سيارتين
+    # هل اصطدموا؟ هل قريبين خطر؟ هل طبيعي؟
+    intersection = get_intersection(box1, box2)
+    distance = get_distance(box1, box2)
+
+    if intersection > 0:
+        # الصناديق تتداخل = اصطدام
+        return {
+            "level": "HIGH",
+            "type": "COLLISION",
+            "message": f"🔴 اصطدام → سيارة {id1} و سيارة {id2}",
+            "color": (0, 0, 255)  # أحمر
+        }
+    elif distance < PROXIMITY_THRESHOLD:
+        # قريبين جداً = تقارب خطير
+        return {
+            "level": "MEDIUM",
+            "type": "DANGEROUS_PROXIMITY",
+            "message": f"🟠 تقارب خطير → سيارة {id1} و سيارة {id2}",
+            "color": (0, 165, 255)  # برتقالي
+        }
+    else:
+        # كل شي طبيعي
+        return {
+            "level": "NORMAL",
+            "type": "NORMAL",
+            "message": None,
+            "color": (0, 255, 0)  # أخضر
+        }
+
+# ================================================
+# الدالة الرئيسية — تجمع كل المنطق
+# ================================================
+
+def analyze_frame(ids, coords, classes):
+    # هذي الدالة تاخذ كل مخرجات يولو
+    # وترجع قائمة بكل القرارات
+
+    decisions = []  # قائمة فارغة — نضيف فيها القرارات
+
+    # أول شي — نجمع السيارات بس (مو باصات أو موتوسيكل)
+    cars = []
+    for i in range(len(ids)):
+        if int(classes[i]) == CAR_CLASS_ID:
+            cars.append({
+                "id": int(ids[i]),  # رقم السيارة
+                "box": coords[i]  # إحداثياتها
+            })
+
+    # ثاني — نفحص كل سيارة لوحدها
+    for car in cars:
+        # هل وقفت فجأة؟
+        r1 = check_sudden_stop(car["id"], car["box"])
+        if r1:
+            decisions.append(r1)
+
+        # هل واقفة مدة طويلة؟
+        r2 = check_long_stop(car["id"], car["box"])
+        if r2:
+            decisions.append(r2)
+
+    # ثالث — نفحص كل زوج سيارات مع بعض
+    # i+1 حتى ما نكرر نفس الزوج مرتين
+    for i in range(len(cars)):
+        for j in range(i + 1, len(cars)):
+            result = check_pair(
+                cars[i]["id"], cars[i]["box"],
+                cars[j]["id"], cars[j]["box"]
+            )
+            if result["level"] != "NORMAL":
+                decisions.append(result)
+
+    return decisions  # نرجع كل القرارات
+
+# ================================================
+# طباعة القرار — نطبعه بالكولاب
+# ================================================
+
+def print_decision(decisions, frame_number):
+    print(f"\n{'=' * 40}")
+    print(f"📍 الفريم {frame_number}")
+
+    if not decisions:
+        # ما في شي مشبوه
+        print("✅ NORMAL — لا يوجد حادث")
+        return
+
+    # نرتب القرارات من الأخطر للأقل
+    priority = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
+    decisions.sort(key=lambda x: priority.get(x["level"], 3))
+
+    # نطبع كل قرار
+    for d in decisions:
+        print(f"   [{d['level']}] {d['message']}")
+
+# ================================================
+# رسم النتائج — نرسم على الفيديو
+# ================================================
+
+def draw_results(frame, ids, coords, classes, decisions):
+    for i in range(len(ids)):
+        if int(classes[i]) != CAR_CLASS_ID:
+            continue  # نتجاهل اللي مو سيارة
+
+        obj_id = int(ids[i])
+        x1, y1, x2, y2 = map(int, coords[i])
+        color = (0, 255, 0)  # أخضر افتراضي = طبيعي
+
+        # نشوف إذا هالسيارة بالقرارات — نغير لونها
+        for d in decisions:
+            if d["message"] and str(obj_id) in d["message"]:
+                color = d["color"]
+                # نكتب نوع المشكلة فوق السيارة
+                cv2.putText(frame, d["type"],
+                            (x1, y1 - 30),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.6, color, 2)
+
+        # نرسم المربع حول السيارة
+        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+
+        # نكتب رقم السيارة
+        cv2.putText(frame, f"ID {obj_id}",
+                    (x1, y1 - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6, color, 2)
+
+    return frame
+
+# ================================================
+# تشغيل الكود — ابدأ من هنه
+# ================================================
+# أول شي — ارفع الفيديو
+print("ارفع الفيديو مالتك 👇")
+uploaded = files.upload()
+
+# Get the uploaded filename dynamically
+video_filename = list(uploaded.keys())[0]
+
+# تحميل يولو
+print("يولو يحمل...")
+model = YOLO("yolov8n.pt")  # يحمل تلقائي من الإنترنت
+
+# فتح الفيديو
+cap = cv2.VideoCapture(video_filename)
+
+# التحقق إذا تم فتح الفيديو بنجاح
+if not cap.isOpened():
+    print(f"❌ خطأ: تعذر فتح ملف الفيديو: {video_filename}")
+    sys.exit(1) # الخروج من البرنامج
+
+frame_number = 0
+
+# إعداد حفظ الفيديو الناتج
+fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+out = cv2.VideoWriter(
+    'output.mp4',
+    fourcc,
+    20.0,
+    (int(cap.get(3)), int(cap.get(4)))  # نفس حجم الفيديو الأصلي
+)
+
+# التحقق إذا تم تهيئة كاتب الفيديو بنجاح
+if not out.isOpened():
+    print("❌ خطأ: تعذر تهيئة كاتب الفيديو. قد يكون السبب هو كوديك غير مدعوم أو أبعاد فيديو غير صحيحة.")
+    cap.release() # تحرير الموارد
+    sys.exit(1) # الخروج من البرنامج
+
+print("الكود يشتغل... انتظر ✅")
+
+# الحلقة الرئيسية — نمر على كل فريم
+while True:
+    ret, frame = cap.read()
+
+    if not ret:
+        # خلصت الفريمات — نوقف
+        break
+
+    frame_number += 1
+
+    # يولو يحلل الفريم ويعطينا السيارات
+    results = model.track(frame, persist=True)
+    boxes = results[0].boxes
+
+    if boxes.id is not None:
+        # نأخذ المعلومات من يولو
+        ids = boxes.id.cpu().numpy()  # أرقام السيارات
+        coords = boxes.xyxy.cpu().numpy()  # الإحداثيات
+        classes = boxes.cls.cpu().numpy()  # نوع الكائن
+
+        # نحلل ونطلع القرار
+        decisions = analyze_frame(ids, coords, classes)
+
+        # نطبع القرار بالكولاب
+        print_decision(decisions, frame_number)
+
+        # نرسم النتائج على الفريم
+        frame = draw_results(frame, ids, coords, classes, decisions)
+
+    # نحفظ الفريم بالفيديو الناتج
+    out.write(frame)
+
+# نسكر كل شي بعد ما يخلص
+cap.release()
+out.release()
+print("\n✅ خلص! الفيديو محفوظ")
+
+# ================================================
+# تحميل الفيديو الناتج — آخر خطوة
+# ================================================
+files.download('output.mp4')
