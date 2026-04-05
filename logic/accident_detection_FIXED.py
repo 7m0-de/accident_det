@@ -1,0 +1,449 @@
+!pip install ultralytics opencv-python numpy -q
+
+#Logic module
+#الكود هذا يعطيك نتيجة اذا مقطع يحدد السياؤات الطبيعية والمصدمة ويعطي لها اللون وكذلك الامر مع الصور
+# يطبق على الكو لاب كما موضحة بخطوات
+# -------------------------------------------------------------------خطوة الاولى للتثبيت
+
+###
+
+#خطوة الثانية لرفع مقطع او اي مدخل ----------------------------------------------------------
+from google.colab import files
+import os
+import sys
+
+print("=" * 60)
+print("🎬 خطوة رفع الفيديو")
+print("=" * 60)
+
+# ⚙️ البحث عن ملفات الفيديو الموجودة
+existing_videos = []
+for ext in ['*.mp4', '*.avi', '*.mov', '*.mkv']:
+    from glob import glob
+    found = glob(ext)
+    existing_videos.extend(found)
+
+if existing_videos:
+    print(f"✅ وجدت {len(existing_videos)} فيديو موجود:")
+    for v in existing_videos:
+        print(f"   - {v}")
+    video_path = existing_videos[0]
+    print(f"\n📹 سيتم استخدام: {video_path}")
+else:
+    print("⚠️  لم أجد فيديو موجود")
+    print("\n📤 يرجى اختيار ملف الفيديو من جهازك...")
+    uploaded = files.upload()
+    
+    if not uploaded:
+        print("❌ لم يتم رفع أي ملف!")
+        sys.exit(1)
+    
+    video_path = list(uploaded.keys())[0]
+    print(f"\n✅ تم رفع: {video_path}")
+
+# ⚙️ التحقق من وجود الملف
+if not os.path.exists(video_path):
+    print(f"❌ خطأ: الملف غير موجود: {video_path}")
+    sys.exit(1)
+
+file_size = os.path.getsize(video_path) / (1024 * 1024)
+print(f"💾 حجم الملف: {file_size:.2f} MB")
+
+if file_size < 1:
+    print("⚠️  تحذير: الملف صغير جداً، قد يكون فارغاً!")
+
+#خطوة الثالثه الكود ودوالة الحسابية مع دالة اتخاذ القرار كاملة ------------------------------------------
+from ultralytics import YOLO
+import cv2
+from IPython.display import display, Image
+import ipywidgets as widgets
+import math
+import numpy as np
+
+# =====================ملحوظة قابلة للتطوير او تعديل=====================
+# الإعدادات
+# ==========================================
+PROXIMITY_THRESHOLD = 80
+STOP_THRESHOLD      = 0.5  # تم تعديل القيمة لتكون أكثر دقة في الكشف عن التوقف
+LONG_STOP_FRAMES    = 150  # ⚙️ تحويل من LONG_STOP_SECONDS إلى عدد الفريمات (5 ثواني عند 30 FPS)
+CAR_CLASS_ID        = 2
+
+previous_positions  = {}
+stop_frame_timers   = {}  # ⚙️ تم تبديل stop_timers بـ frame-based logic
+
+# =====================قابلة للتعديل والاضافه=====================
+# دوال الحساب
+# ==========================================
+
+class CalculateSpeed:
+    """
+    ⚙️ محسّن لحساب السرعة بطريقة أكثر واقعية وAccuracy عالي
+    - تحويل من Time-based إلى Frame-based
+    - إضافة Exponential Smoothing
+    - Noise Filtering
+    """
+    def __init__(self, fps):
+        self.fps = fps
+        self.prev_positions = {}
+        self.speeds = {}
+        self.smoothed_speeds = {}  # ⚙️ للحفاظ على السرعات الممللسة
+        self.smoothing_factor = 0.6  # ⚙️ معامل التمليس (0.6 يعني 60% القيمة الجديدة)
+        
+    def update(self, track_id, cx, cy):
+        """
+        track_id: ID مال السيارة من التراكينك
+        cx, cy: مركز البوكس
+        """
+        if track_id in self.prev_positions:
+            prev_x, prev_y = self.prev_positions[track_id]
+            
+            # ⚙️ حساب الإزاحة بين الإطارات
+            dx = cx - prev_x
+            dy = cy - prev_y
+            
+            # ⚙️ المسافة بالبكسل
+            distance = math.sqrt(dx**2 + dy**2)
+            
+            # ⚙️ السرعة = البكسل لكل فريم (بدل الثانية)
+            raw_speed = distance
+            
+            # ⚙️ Noise Filtering - تجاهل الحركات الصغيرة جداً (هز الكاميرا)
+            if raw_speed < 0.3:
+                raw_speed = 0
+            
+            # ⚙️ Exponential Smoothing - تمليس القيم
+            if track_id in self.smoothed_speeds:
+                smoothed = (self.smoothing_factor * raw_speed + 
+                           (1 - self.smoothing_factor) * self.smoothed_speeds[track_id])
+            else:
+                smoothed = raw_speed
+            
+            self.speeds[track_id] = raw_speed
+            self.smoothed_speeds[track_id] = smoothed
+        else:
+            self.speeds[track_id] = 0
+            self.smoothed_speeds[track_id] = 0
+        
+        self.prev_positions[track_id] = (cx, cy)
+        
+        return self.smoothed_speeds[track_id]  # ⚙️ إرجاع القيمة الممللسة
+    
+    def get_speed(self, track_id):
+        """⚙️ الحصول على السرعة الممللسة"""
+        return self.smoothed_speeds.get(track_id, 0)
+
+
+def get_center(box):
+    cx = (box[0] + box[2]) / 2
+    cy = (box[1] + box[3]) / 2
+    return cx, cy
+
+def get_distance(box1, box2):
+    cx1, cy1 = get_center(box1)
+    cx2, cy2 = get_center(box2)
+    return ((cx1-cx2)**2 + (cy1-cy2)**2) ** 0.5
+
+def get_intersection(box1, box2):
+    ix1 = max(box1[0], box2[0])
+    iy1 = max(box1[1], box2[1])
+    ix2 = min(box1[2], box2[2])
+    iy2 = min(box1[3], box2[3])
+    return max(0, ix2-ix1) * max(0, iy2-iy1)
+
+def check_sudden_stop(obj_id, box):
+    cx, cy = get_center(box)
+    if obj_id in previous_positions:
+        prev_cx, prev_cy = previous_positions[obj_id]
+        dist = ((cx-prev_cx)**2 + (cy-prev_cy)**2) ** 0.5
+        if dist < STOP_THRESHOLD:
+            previous_positions[obj_id] = (cx, cy)
+            return {
+                "level"  : "MEDIUM",
+                "type"   : "SUDDEN_STOP",
+                "message": f"⚠ توقف مفاجئ → سيارة {obj_id}",
+                "color"  : (0, 0, 255)
+            }
+    previous_positions[obj_id] = (cx, cy)
+    return None
+
+def check_long_stop(obj_id, box, current_frame):
+    """
+    ⚙️ تحويل من Time-based إلى Frame-based
+    current_frame: رقم الفريم الحالي
+    """
+    cx, cy = get_center(box)
+    if obj_id in previous_positions:
+        prev_cx, prev_cy = previous_positions[obj_id]
+        dist = ((cx-prev_cx)**2 + (cy-prev_cy)**2) ** 0.5
+        if dist < STOP_THRESHOLD:
+            if obj_id not in stop_frame_timers:
+                stop_frame_timers[obj_id] = current_frame  # ⚙️ تسجيل رقم الفريم بدل الزمن
+            frames_stopped = current_frame - stop_frame_timers[obj_id]
+            if frames_stopped > LONG_STOP_FRAMES:
+                return {
+                    "level"  : "HIGH",
+                    "type"   : "LONG_STOP",
+                    "message": f"🔴 توقف طويل → سيارة {obj_id} واقفة {frames_stopped} فريم!",
+                    "color"  : (0, 0, 200)
+                }
+        else:
+            stop_frame_timers.pop(obj_id, None)  # ⚙️ إعادة تعيين العداد
+    return None
+
+def check_pair(id1, box1, speed1, id2, box2, speed2):
+    intersection = get_intersection(box1, box2)
+    distance     = get_distance(box1, box2)
+    if intersection > 0:
+        return {
+            "level"  : "HIGH",
+            "type"   : "COLLISION",
+            "message": f"🔴 اصطدام → سيارة {id1} و سيارة {id2}",
+            "color"  : (0, 0, 255)
+        }
+    elif distance < PROXIMITY_THRESHOLD:
+        if speed1 < 2 and speed2 < 2:
+            return {
+                "level"  : "LOW",
+                "type"   : "SAFE_PROXIMITY",
+                "message": "NO ACCIDENT",
+                "color"  : (0, 255, 0)
+            }
+        else:
+            return {
+                "level"  : "MEDIUM",
+                "type"   : "MEDIUM",
+                "message": f"🟠 تقارب خطير → سيارة {id1} و سيارة {id2}",
+                "color"  : (0, 165, 255)
+            }
+    return None
+
+def analyze_frame(ids, coords, classes, car_speeds, current_frame):
+    """⚙️ تم إضافة current_frame للـ frame-based logic"""
+    decisions = []
+    cars = []
+    for i in range(len(ids)):
+        if int(classes[i]) == CAR_CLASS_ID:
+            cars.append({"id": int(ids[i]), "box": coords[i], "speed": car_speeds.get(int(ids[i]), 0)})
+
+    for car in cars:
+        r1 = check_sudden_stop(car["id"], car["box"])
+        if r1: decisions.append(r1)
+        r2 = check_long_stop(car["id"], car["box"], current_frame)  # ⚙️ تمرير الفريم الحالي
+        if r2: decisions.append(r2)
+
+    for i in range(len(cars)):
+        for j in range(i+1, len(cars)):
+            result = check_pair(
+                cars[i]["id"], cars[i]["box"], cars[i]["speed"],
+                cars[j]["id"], cars[j]["box"], cars[j]["speed"]
+            )
+            if result and result["level"] != "NORMAL":
+                decisions.append(result)
+    return decisions
+
+def print_decision(decisions, frame_number):
+    print(f"\n{'='*40}")
+    print(f"📍 الفريم {frame_number}")
+    if not decisions:
+        print("✅ NORMAL — لا يوجد حادث")
+        return
+    priority = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
+    decisions.sort(key=lambda x: priority.get(x["level"], 3))
+    for d in decisions:
+        print(f"   [{d['level']}] {d['message']}")
+
+def draw_results(frame, ids, coords, classes, decisions, car_speeds):
+    """⚙️ تم إضافة car_speeds لعرض السرعة على الفريم"""
+    for i in range(len(ids)):
+        if int(classes[i]) != CAR_CLASS_ID:
+            continue
+        obj_id       = int(ids[i])
+        x1, y1, x2, y2 = map(int, coords[i])
+        color        = (0, 255, 0)
+        for d in decisions:
+            if str(obj_id) in d["message"]:
+                color = d["color"]
+                cv2.putText(frame, d["type"],
+                            (x1, y1-30),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.6, color, 2)
+        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+        
+        # ⚙️ عرض السرعة والـ ID على الفريم
+        speed = car_speeds.get(obj_id, 0)
+        speed_text = f"ID {obj_id} | Speed: {speed:.1f}px/f"
+        cv2.putText(frame, speed_text,
+                    (x1, y1-10),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5, color, 2)
+    return frame
+
+# ===================يمكن ان اطورها او ايمن يساعدني بخبرته =======================
+# الحلقة الرئيسية — مخصصة لـ
+# ==========================================
+
+print("\n" + "=" * 60)
+print("🔄 خطوة تشغيل النظام")
+print("=" * 60)
+
+print("🔄 جاري تحميل الموديل...")
+try:
+    model = YOLO("yolov8n.pt")
+    print("✅ تم تحميل الموديل بنجاح")
+except Exception as e:
+    print(f"❌ خطأ في تحميل الموديل: {e}")
+    sys.exit(1)
+
+print(f"\n📹 فتح الفيديو: {video_path}")
+try:
+    cap = cv2.VideoCapture(video_path)
+    
+    # ⚙️ التحقق من فتح الفيديو
+    if not cap.isOpened():
+        print(f"❌ خطأ: لم يتمكن من فتح الفيديو: {video_path}")
+        print("\n💡 التجربات:")
+        print("   1. تأكد من امتداد الملف (.mp4, .avi, .mov)")
+        print("   2. تأكد من أن الملف ليس فارغاً")
+        print("   3. جرّب تحويل الملف إلى MP4")
+        sys.exit(1)
+    
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    
+    print(f"✅ تم فتح الفيديو بنجاح")
+    print(f"   ⚙️ FPS: {fps}")
+    print(f"   📊 إجمالي الفريمات: {total_frames}")
+    print(f"   🎬 الدقة: {frame_width}x{frame_height}")
+    
+    # ⚙️ التحقق من صحة البيانات
+    if fps <= 0:
+        print(f"⚠️  تحذير: FPS غير صحيح ({fps}), سيتم تعيينها إلى 30")
+        fps = 30
+    
+    if total_frames <= 0:
+        print(f"⚠️  تحذير: عدد الفريمات غير صحيح, قد يكون الفيديو فارغاً")
+    
+except Exception as e:
+    print(f"❌ خطأ في فتح الفيديو: {e}")
+    sys.exit(1)
+
+frame_number = 0
+speed_tracker = CalculateSpeed(fps)
+
+# إعداد حفظ الفيديو الناتج
+print("\n📁 إعداد حفظ الفيديو الناتج...")
+try:
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter('output.mp4', fourcc, fps,
+                          (frame_width, frame_height))
+    
+    if not out.isOpened():
+        print("⚠️  تحذير: قد تكون هناك مشكلة في كتابة الفيديو")
+    else:
+        print("✅ تم تحضير الفيديو للحفظ")
+except Exception as e:
+    print(f"⚠️  تحذير: مشكلة في إعداد الحفظ: {e}")
+
+print("\n" + "=" * 60)
+print("⏳ معالجة الفيديو (قد تستغرق وقتاً)")
+print("=" * 60)
+
+processed_frames = 0
+start_processing = True
+
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        break
+
+    frame_number += 1
+    processed_frames += 1
+    
+    # ⚙️ عرض نسبة التقدم
+    if frame_number % 30 == 0 or frame_number == 1:
+        progress = (frame_number / total_frames) * 100 if total_frames > 0 else 0
+        print(f"⏳ التقدم: {progress:.1f}% ({frame_number}/{total_frames})")
+    
+    try:
+        results = model.track(frame, persist=True, verbose=False)
+        boxes = results[0].boxes
+
+        if boxes.id is not None:
+            ids = boxes.id.cpu().numpy()
+            coords = boxes.xyxy.cpu().numpy()
+            classes = boxes.cls.cpu().numpy()
+            car_speeds = {}
+
+            for i in range(len(ids)):
+                if int(classes[i]) != CAR_CLASS_ID:
+                    continue
+
+                obj_id = int(ids[i])
+                x1, y1, x2, y2 = map(int, coords[i])
+                cx, cy = get_center(coords[i])
+                
+                # ⚙️ تحديث السرعة (الآن Frame-based)
+                speed = speed_tracker.update(obj_id, cx, cy)
+                car_speeds[obj_id] = speed
+
+            # ⚙️ تمرير frame_number للـ analyze_frame
+            decisions = analyze_frame(ids, coords, classes, car_speeds, frame_number)
+            print_decision(decisions, frame_number)
+            
+            # ⚙️ رسم النتائج مع السرعة
+            frame = draw_results(frame, ids, coords, classes, decisions, car_speeds)
+        else:
+            # ⚙️ إذا لم تكن هناك سيارات مكتشفة
+            cv2.putText(frame, "No Cars Detected", (50, 50),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+
+        # ⚙️ إضافة رقم الفريم على الفيديو
+        cv2.putText(frame, f"Frame: {frame_number}", (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+        # حفظ الفريم في الفيديو الناتج
+        out.write(frame)
+        
+    except Exception as e:
+        print(f"⚠️  خطأ في معالجة الفريم {frame_number}: {e}")
+        # المتابعة رغم الأخطاء
+        out.write(frame)
+
+cap.release()
+out.release()
+
+print("\n" + "=" * 60)
+print("✅ اكتملت المعالجة!")
+print("=" * 60)
+print(f"📊 إجمالي الفريمات المعالجة: {processed_frames}")
+print(f"📁 الفيديو محفوظ بـ: output.mp4")
+
+# ⚙️ التحقق من وجود الملف
+if os.path.exists('output.mp4'):
+    output_size = os.path.getsize('output.mp4') / (1024 * 1024)
+    print(f"💾 حجم الملف الناتج: {output_size:.2f} MB")
+    
+    if output_size > 0.1:  # أكثر من 100 KB
+        print("✅ الملف جاهز للتحميل\n")
+        
+        #خطوة الرابعة ------------------------------------------------------------
+        print("=" * 60)
+        print("📥 تحميل الفيديو الناتج")
+        print("=" * 60)
+        try:
+            files.download('output.mp4')
+            print("✅ تم التحميل بنجاح!")
+        except Exception as e:
+            print(f"⚠️  مشكلة في التحميل: {e}")
+            print("جرّب الخيار الثاني: الملف موجود في Google Colab كـ output.mp4")
+    else:
+        print(f"❌ الملف الناتج فارغ أو صغير جداً ({output_size:.2f} MB)")
+        print("قد تكون هناك مشكلة في المعالجة")
+else:
+    print("❌ خطأ: لم يتم إنشاء الملف الناتج!")
+    print("\n🔍 أسباب محتملة:")
+    print("   1. الفيديو فارغ أو تالف")
+    print("   2. لا توجد صلاحيات للكتابة")
+    print("   3. مشكلة في codec الفيديو")
