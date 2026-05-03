@@ -1,0 +1,438 @@
+!pip install -q -U ultralytics opencv-python-headless
+from google.colab import files
+from ultralytics import YOLO
+import cv2
+import numpy as np
+from pathlib import Path
+# Upload video
+uploaded = files.upload()
+video_path = next(iter(uploaded.keys()))
+
+# BoT-SORT config
+
+tracker_yaml = Path("botsort_stable.yaml")
+tracker_yaml.write_text(
+    """tracker_type: botsort
+track_high_thresh: 0.28
+track_low_thresh: 0.05
+new_track_thresh: 0.40
+track_buffer: 240
+match_thresh: 0.90
+fuse_score: True
+proximity_thresh: 0.45
+appearance_thresh: 0.55
+with_reid: True
+model: auto
+gmc_method: sparseOptFlow
+"""
+)
+
+# -------------------------
+# Model
+# -------------------------
+model = YOLO("yolov8x.pt")
+
+# -------------------------
+# Video I/O
+# -------------------------
+cap = cv2.VideoCapture(video_path)
+fps = cap.get(cv2.CAP_PROP_FPS)
+if not fps or fps <= 0:
+    fps = 30
+
+W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+if W <= 0 or H <= 0:
+    W, H = 960, 540
+
+out = cv2.VideoWriter(
+    "output.mp4",
+    cv2.VideoWriter_fourcc(*"mp4v"),
+    fps,
+    (W, H)
+)
+
+# -------------------------
+# Parameters
+# -------------------------
+MAX_MISSES = 40
+MAX_MATCH_DIST = 180.0
+MIN_MATCH_IOU = 0.03
+
+LOCK_FRAMES = 20
+OVERLAP_LOCK_IOU = 0.12
+MAX_PRED_DIST_LOCKED = 100
+MAX_PRED_DIST_NORMAL = 180
+
+# -------------------------
+# Helpers
+# -------------------------
+def iou_xyxy(a, b):
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+
+    ix1 = max(ax1, bx1)
+    iy1 = max(ay1, by1)
+    ix2 = min(ax2, bx2)
+    iy2 = min(ay2, by2)
+
+    iw = max(0, ix2 - ix1)
+    ih = max(0, iy2 - iy1)
+    inter = iw * ih
+
+    area_a = max(0, ax2 - ax1) * max(0, ay2 - ay1)
+    area_b = max(0, bx2 - bx1) * max(0, by2 - by1)
+    union = area_a + area_b - inter
+    if union <= 0:
+        return 0.0
+    return inter / union
+
+def center(box):
+    x1, y1, x2, y2 = box
+    return np.array([(x1 + x2) / 2.0, (y1 + y2) / 2.0], dtype=np.float32)
+
+def dist(a, b):
+    return float(np.linalg.norm(center(a) - center(b)))
+
+def predict_center(track):
+    c = np.array(track["last_center"], dtype=np.float32)
+    v = np.array(track.get("velocity", (0.0, 0.0)), dtype=np.float32)
+    return c + v
+
+def track_speed(track):
+    vx, vy = track.get("velocity", (0.0, 0.0))
+    return float(np.hypot(vx, vy))
+
+# -------------------------
+# Stable ID memory
+# -------------------------
+stable_tracks = {}
+next_stable_id = 1
+
+frame_idx = 0
+
+# -------------------------
+# Main loop
+# -------------------------
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        break
+
+    frame_idx += 1
+    frame_area = frame.shape[0] * frame.shape[1]
+
+    results = model.track(
+        frame,
+        persist=True,
+        tracker=str(tracker_yaml),
+        conf=0.20,
+        iou=0.70,
+        imgsz=1280,
+        classes=[2, 5, 7],
+        verbose=False,
+    )[0]
+
+    detections = []
+
+    if results.boxes is not None and results.boxes.id is not None:
+        xyxy = results.boxes.xyxy.cpu().numpy()
+        ids = results.boxes.id.cpu().numpy().astype(int)
+        confs = results.boxes.conf.cpu().numpy()
+        clss = results.boxes.cls.cpu().numpy().astype(int)
+
+        for box, raw_id, conf, cls in zip(xyxy, ids, confs, clss):
+            x1, y1, x2, y2 = map(int, box)
+            w = x2 - x1
+            h = y2 - y1
+            area = w * h
+            ratio = w / max(h, 1)
+
+            if w < 20 or h < 20:
+                continue
+            if area > frame_area * 0.35:
+                continue
+            if ratio < 0.20 or ratio > 7.0:
+                continue
+
+            detections.append({
+                "raw_id": int(raw_id),
+                "box": (x1, y1, x2, y2),
+                "conf": float(conf),
+                "cls": int(cls),
+            })
+
+    # age all stable tracks
+    for sid in list(stable_tracks.keys()):
+        stable_tracks[sid]["misses"] += 1
+
+    # suppress duplicate raw detections
+    detections.sort(key=lambda d: d["conf"], reverse=True)
+    filtered = []
+    for d in detections:
+        keep = True
+        for f in filtered:
+            if d["cls"] == f["cls"] and iou_xyxy(d["box"], f["box"]) > 0.55:
+                keep = False
+                break
+        if keep:
+            filtered.append(d)
+    detections = filtered
+
+    # -------------------------
+    # lock tracks during close contact
+    # -------------------------
+    ids_now = list(stable_tracks.keys())
+    for i in range(len(ids_now)):
+        si = ids_now[i]
+        if stable_tracks[si]["misses"] > 0:
+            continue
+
+        for j in range(i + 1, len(ids_now)):
+            sj = ids_now[j]
+            if stable_tracks[sj]["misses"] > 0:
+                continue
+
+            if stable_tracks[si]["cls"] != stable_tracks[sj]["cls"]:
+                continue
+
+            ov = iou_xyxy(stable_tracks[si]["box"], stable_tracks[sj]["box"])
+            if ov >= OVERLAP_LOCK_IOU:
+                stable_tracks[si]["locked_until"] = max(
+                    stable_tracks[si].get("locked_until", 0),
+                    frame_idx + LOCK_FRAMES
+                )
+                stable_tracks[sj]["locked_until"] = max(
+                    stable_tracks[sj].get("locked_until", 0),
+                    frame_idx + LOCK_FRAMES
+                )
+
+    # -------------------------
+    # matching: stable IDs <-> detections
+    # -------------------------
+    active_ids = list(stable_tracks.keys())
+    matched_stable = {}
+    used_det = set()
+
+    if len(active_ids) > 0 and len(detections) > 0:
+        pair_list = []
+
+        for i, sid in enumerate(active_ids):
+            s = stable_tracks[sid]
+            sbox = s["box"]
+            scls = s["cls"]
+            pred_c = predict_center(s)
+
+            for j, d in enumerate(detections):
+                dbox = d["box"]
+                dcls = d["cls"]
+
+                if dcls != scls:
+                    continue
+
+                dcenter = center(dbox)
+                iou = iou_xyxy(sbox, dbox)
+                pd = float(np.linalg.norm(pred_c - dcenter))
+
+                locked = frame_idx <= s.get("locked_until", 0)
+
+                # during overlap, only accept very close predicted matches
+                if locked and pd > MAX_PRED_DIST_LOCKED:
+                    continue
+
+                # normal mode still uses motion gating
+                if not locked and pd > MAX_PRED_DIST_NORMAL and iou < 0.05:
+                    continue
+
+                overlap_penalty = 0.0
+                if iou > 0.10:
+                    overlap_penalty = 0.35
+
+                age_bonus = min(s["age"] / 80.0, 0.25)
+                speed_bonus = min(track_speed(s) / 80.0, 0.15)
+
+                cost = (
+                    (1.0 - iou) * 0.40 +
+                    min(pd / 220.0, 1.0) * 0.45 +
+                    overlap_penalty -
+                    age_bonus -
+                    speed_bonus
+                )
+
+                pair_list.append((cost, i, j, iou, pd, locked))
+
+        pair_list.sort(key=lambda x: x[0])
+
+        assigned_rows = set()
+        assigned_cols = set()
+
+        for cost, i, j, iou, pd, locked in pair_list:
+            if i in assigned_rows or j in assigned_cols:
+                continue
+
+            sid = active_ids[i]
+
+            if locked:
+                if pd > MAX_PRED_DIST_LOCKED:
+                    continue
+            else:
+                if not (iou >= MIN_MATCH_IOU or pd <= MAX_MATCH_DIST):
+                    continue
+
+            matched_stable[sid] = j
+            used_det.add(j)
+            assigned_rows.add(i)
+            assigned_cols.add(j)
+
+    # -------------------------
+    # update matched tracks
+    # -------------------------
+    for sid, det_idx in matched_stable.items():
+        d = detections[det_idx]
+        old_center = np.array(stable_tracks[sid]["last_center"], dtype=np.float32)
+        new_center = center(d["box"])
+        velocity = tuple((new_center - old_center).tolist())
+
+        stable_tracks[sid].update({
+            "box": d["box"],
+            "cls": d["cls"],
+            "conf": d["conf"],
+            "misses": 0,
+            "last_frame": frame_idx,
+            "age": stable_tracks[sid]["age"] + 1,
+            "last_center": tuple(new_center.tolist()),
+            "velocity": velocity,
+        })
+
+    # -------------------------
+    # create new tracks for unmatched detections
+    # -------------------------
+    for idx, d in enumerate(detections):
+        if idx in used_det:
+            continue
+
+        dcenter = center(d["box"])
+        reused = None
+
+        for sid, s in stable_tracks.items():
+            if s["misses"] > MAX_MISSES:
+                continue
+            if s["cls"] != d["cls"]:
+                continue
+
+            locked = frame_idx <= s.get("locked_until", 0)
+            pred_c = predict_center(s)
+            pd = float(np.linalg.norm(pred_c - dcenter))
+
+            # during lock, do not steal the ID unless very close to prediction
+            if locked and pd > MAX_PRED_DIST_LOCKED:
+                continue
+
+            if iou_xyxy(s["box"], d["box"]) > 0.50:
+                reused = sid
+                break
+
+        if reused is not None:
+            old_center = np.array(stable_tracks[reused]["last_center"], dtype=np.float32)
+            new_center = dcenter
+            velocity = tuple((new_center - old_center).tolist())
+
+            stable_tracks[reused].update({
+                "box": d["box"],
+                "cls": d["cls"],
+                "conf": d["conf"],
+                "misses": 0,
+                "last_frame": frame_idx,
+                "age": stable_tracks[reused]["age"] + 1,
+                "last_center": tuple(new_center.tolist()),
+                "velocity": velocity,
+            })
+            continue
+
+        sid = next_stable_id
+        next_stable_id += 1
+
+        stable_tracks[sid] = {
+            "box": d["box"],
+            "cls": d["cls"],
+            "conf": d["conf"],
+            "misses": 0,
+            "first_frame": frame_idx,
+            "last_frame": frame_idx,
+            "age": 1,
+            "last_center": tuple(dcenter.tolist()),
+            "velocity": (0.0, 0.0),
+            "locked_until": 0,
+        }
+
+    # -------------------------
+    # delete old lost tracks
+    # -------------------------
+    for sid in list(stable_tracks.keys()):
+        if stable_tracks[sid]["misses"] > MAX_MISSES:
+            del stable_tracks[sid]
+
+    # -------------------------
+    # remove duplicate stable tracks that overlap too much
+    # -------------------------
+    ids_now = list(stable_tracks.keys())
+    remove_ids = set()
+
+    for i in range(len(ids_now)):
+        si = ids_now[i]
+        if si in remove_ids:
+            continue
+        for j in range(i + 1, len(ids_now)):
+            sj = ids_now[j]
+            if sj in remove_ids:
+                continue
+
+            if stable_tracks[si]["cls"] != stable_tracks[sj]["cls"]:
+                continue
+
+            b1 = stable_tracks[si]["box"]
+            b2 = stable_tracks[sj]["box"]
+            ov = iou_xyxy(b1, b2)
+
+            if ov > 0.65:
+                score_i = stable_tracks[si]["conf"] - stable_tracks[si]["misses"] * 0.01 + stable_tracks[si]["age"] * 0.001
+                score_j = stable_tracks[sj]["conf"] - stable_tracks[sj]["misses"] * 0.01 + stable_tracks[sj]["age"] * 0.001
+                if score_i >= score_j:
+                    remove_ids.add(sj)
+                else:
+                    remove_ids.add(si)
+
+    for sid in remove_ids:
+        if sid in stable_tracks:
+            del stable_tracks[sid]
+
+    # -------------------------
+    # draw active tracks
+    # -------------------------
+    for sid, s in stable_tracks.items():
+        if s["misses"] > 0:
+            continue
+
+        x1, y1, x2, y2 = map(int, s["box"])
+        locked = frame_idx <= s.get("locked_until", 0)
+
+        color = (0, 0, 255) if locked else (0, 255, 0)
+        thickness = 3 if locked else 2
+
+        cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
+        cv2.putText(
+            frame,
+            f"ID {sid}",
+            (x1, max(20, y1 - 10)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            color,
+            2,
+        )
+
+    out.write(frame)
+
+cap.release()
+out.release()
+print("Saved: output.mp4")
+files.download("output.mp4")
