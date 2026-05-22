@@ -1,0 +1,245 @@
+# Vehicle Tracker YOLOv10x BoT-SORT
+
+!pip install -q -U ultralytics opencv-python-headless
+
+import cv2
+import time
+from collections import defaultdict, deque
+from pathlib import Path
+from typing import Dict, List, Tuple
+
+from ultralytics import YOLO
+from google.colab import files
+
+
+# CONFIG
+class Config:
+    MODEL      = "yolov10x.pt"
+    CONF       = 0.45
+    IOU        = 0.50
+    INPUT_SIZE = 1280
+
+    CLASSES = [0, 2, 3, 7]
+    NAMES   = {0: "person", 2: "car", 3: "motorcycle", 7: "truck"}
+    COLORS  = {
+        "person":     (255, 180,   0),
+        "car":        (0,   220,   0),
+        "motorcycle": (0,   220, 220),
+        "truck":      (180,  80,   0),
+    }
+
+    LOCK_AFTER_SECONDS = 5.0
+    MIN_W_RATIO = 0.025
+    MIN_H_RATIO = 0.025
+    MAX_AREA_R  = 0.40
+
+
+# BOTSORT CONFIG — إعدادات مُحسَّنة لأثبت IDs
+
+def make_botsort(cfg: Config) -> str:
+    p = Path("botsort.yaml")
+    p.write_text(
+        "tracker_type: botsort\n"
+        f"track_high_thresh: {cfg.CONF}\n"
+        "track_low_thresh: 0.10\n"
+        f"new_track_thresh: {cfg.CONF + 0.05:.2f}\n"
+        "track_buffer: 120\n"       # 4 ثوانٍ صبر على الغائب
+        "match_thresh: 0.85\n"      # صعّب المطابقة = IDs أثبت
+        "fuse_score: True\n"
+        "with_reid: True\n"         # appearance features = يتعرف بالشكل
+        "model: auto\n"
+        "proximity_thresh: 0.5\n"
+        "appearance_thresh: 0.25\n" # صغير = أكثر صرامة في المطابقة
+        "gmc_method: sparseOptFlow\n"
+    )
+    return str(p)
+
+
+# TIME LOCKER  قفل الكلاس بعد 5 ثوانٍ
+class TimeLocker:
+
+    def __init__(self, cfg: Config, fps: float):
+        self.lock_frames = int(fps * cfg.LOCK_AFTER_SECONDS)
+        self._first  : Dict[int, int]   = {}
+        self._obs    : Dict[int, deque] = {}
+        self._locked : Dict[int, int]   = {}
+
+    def get(self, tid: int, cls: int, frame_idx: int) -> Tuple[int, bool]:
+        # أول ظهور
+        if tid not in self._first:
+            self._first[tid] = frame_idx
+            self._obs[tid]   = deque()
+
+        # مقفول  أعده مباشرة
+        if tid in self._locked:
+            return self._locked[tid], True
+
+        # جمع الملاحظات
+        self._obs[tid].append(cls)
+
+        # هل انتهت مدة الانتظار
+        if frame_idx - self._first[tid] >= self.lock_frames:
+            counts = defaultdict(int)
+            for c in self._obs[tid]:
+                counts[c] += 1
+            best = max(counts, key=counts.__getitem__)
+            self._locked[tid] = best
+            return best, True
+
+        # قبل القفل   
+        counts = defaultdict(int)
+        for c in self._obs[tid]:
+            counts[c] += 1
+        return max(counts, key=counts.__getitem__), False
+
+    def cleanup(self, frame_idx: int, max_age: int = 300):
+        old = [t for t, f in self._first.items()
+               if frame_idx - f > max_age and t in self._locked]
+        for t in old:
+            self._first.pop(t, None)
+            self._obs.pop(t, None)
+
+
+# DRAW + DATA
+
+def process(frame, result, frame_idx, locker, cfg, fw, fh) -> List[dict]:
+    data = []
+
+    if result.boxes is None or result.boxes.id is None:
+        return data
+
+    min_w    = fw * cfg.MIN_W_RATIO
+    min_h    = fh * cfg.MIN_H_RATIO
+    max_area = fw * fh * cfg.MAX_AREA_R
+
+    for box, tid, conf, cls in zip(
+        result.boxes.xyxy.cpu().numpy(),
+        result.boxes.id.cpu().numpy().astype(int),
+        result.boxes.conf.cpu().numpy(),
+        result.boxes.cls.cpu().numpy().astype(int),
+    ):
+        x1, y1, x2, y2 = map(int, box)
+        w, h = x2 - x1, y2 - y1
+
+        if w < min_w or h < min_h or w * h > max_area:
+            continue
+
+        if int(cls) not in cfg.NAMES:
+            continue
+
+        stable_cls, locked = locker.get(int(tid), int(cls), frame_idx)
+        name  = cfg.NAMES.get(stable_cls, "unknown")
+        color = cfg.COLORS.get(name, (200, 200, 200))
+
+        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+
+        label = f"ID:{tid} {name} {conf:.0%}"
+        font  = cv2.FONT_HERSHEY_SIMPLEX
+        scale = 0.50
+        thick = 1
+        (tw, th), _ = cv2.getTextSize(label, font, scale, thick)
+
+        if tw > w - 4:
+            scale = max(0.30, scale * (w - 4) / max(tw, 1))
+            (tw, th), _ = cv2.getTextSize(label, font, scale, thick)
+
+        ty = y1 - 4 if y1 - th - 8 >= 0 else y1 + th + 6
+        cv2.rectangle(frame, (x1, ty-th-3), (x1+tw+4, ty+2), color, -1)
+        cv2.putText(frame, label, (x1+2, ty), font, scale, (0,0,0), thick, cv2.LINE_AA)
+
+        data.append({
+            "id"      : int(tid),
+            "cls_id"  : int(stable_cls),
+            "cls_name": name,
+            "locked"  : bool(locked),
+            "bbox"    : (x1, y1, x2, y2),
+            "center"  : ((x1+x2)/2.0, (y1+y2)/2.0),
+            "conf"    : float(conf),
+        })
+
+    return data
+
+
+# MAIN
+def run() -> Dict[int, List[dict]]:
+    cfg = Config()
+
+    print(" ارفع الفيديو...")
+    uploaded   = files.upload()
+    video_path = next(iter(uploaded.keys()))
+
+    model       = YOLO(cfg.MODEL)
+    tracker_cfg = make_botsort(cfg)
+
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise RuntimeError(f"لا يمكن فتح: {video_path}")
+
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30
+    W   = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))  or 1280
+    H   = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 720
+
+    locker = TimeLocker(cfg, fps)
+
+    out = cv2.VideoWriter(
+        "tracked_output.mp4",
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        fps, (W, H),
+    )
+
+    print(f" {cfg.MODEL} | BoT-SORT | {W}×{H} | {fps:.0f}fps")
+    print(f"   القفل بعد: {cfg.LOCK_AFTER_SECONDS}ث = {locker.lock_frames} فريم")
+
+    track_log : Dict[int, List[dict]] = {}
+    frame_idx = 0
+    t0 = time.time()
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        frame_idx += 1
+
+        result = model.track(
+            frame,
+            persist = True,
+            tracker = tracker_cfg,
+            conf    = cfg.CONF,
+            iou     = cfg.IOU,
+            imgsz   = cfg.INPUT_SIZE,
+            classes = cfg.CLASSES,
+            verbose = False,
+        )[0]
+
+        frame_data           = process(frame, result, frame_idx, locker, cfg, W, H)
+        track_log[frame_idx] = frame_data
+
+        if frame_idx % 300 == 0:
+            locker.cleanup(frame_idx)
+
+        out.write(frame)
+
+        if frame_idx % 100 == 0:
+            e = time.time() - t0
+            print(f"   فريم {frame_idx:5d} | {frame_idx/e:5.1f} FPS | مسارات: {len(frame_data)}")
+
+    cap.release()
+    out.release()
+    e = time.time() - t0
+    print(f"\n {frame_idx} فريم | {e:.1f}ث | {frame_idx/e:.1f} FPS avg")
+    files.download("tracked_output.mp4")
+    return track_log
+
+
+if __name__ == "__main__":
+    log = run()
+
+    # for frame_num, vehicles in log.items():
+    #     for v in vehicles:
+    #         v["id"]         ID ثابت
+    #         v["cls_name"]   "car"/"person"/"motorcycle"/"truck"
+    #         v["locked"]     True = مقفول بعد 5 ثوانٍ
+    #         v["bbox"]      (x1, y1, x2, y2)
+    #         v["center"]     (cx, cy)
+    #         v["conf"]       نسبة الثقة
