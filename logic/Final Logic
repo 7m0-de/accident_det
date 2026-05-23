@@ -1,0 +1,528 @@
+# =============================================================================
+# Vehicle Tracker + Accident Detection — Final Version
+# YOLOv10x + BoT-SORT
+# =============================================================================
+# ┌─────────────────────────────────────────────────────────────────────────┐
+# │  التعديلات المضافة في هذا الإصدار:                                      │
+# │  1. [NEW] إضافة frame_idx و w و h داخل vehicles dict                   │
+# │  2. [NEW] إضافة timestamp (بالثواني) لكل مركبة                         │
+# │  3. [NEW] حفظ track_log كـ JSON على الديسك + تحميل تلقائي              │
+# │  4. [NEW] checkpoint كل 500 فريم لمنع ضياع البيانات                    │
+# │  5. [NEW] إحصائيات نهائية عند انتهاء المعالجة                          │
+# │  6. [NEW] رفع LOCK_AFTER_SECONDS من 5 إلى 8 لتثبيت الكلاس              │
+# │  7. [NEW] تخفيض CONF من 0.45 إلى 0.40 لاصطياد مركبات بعيدة            │
+# └─────────────────────────────────────────────────────────────────────────┘
+
+# !pip install -q -U ultralytics opencv-python-headless
+
+import cv2
+import time
+import math
+import json                                        # [NEW] لحفظ track_log
+from collections import defaultdict, deque
+from pathlib import Path
+from typing import Dict, List, Tuple, Optional
+
+from ultralytics import YOLO
+from google.colab import files
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CONFIG
+# ─────────────────────────────────────────────────────────────────────────────
+class Config:
+    MODEL      = "yolov10x.pt"
+    CONF       = 0.40              # [NEW] خُفِّض من 0.45 إلى 0.40 لاصطياد مركبات بعيدة
+    IOU        = 0.50
+    INPUT_SIZE = 1280
+
+    CLASSES = [0, 2, 3, 7]
+    NAMES   = {0: "person", 2: "car", 3: "motorcycle", 7: "truck"}
+    COLORS  = {
+        "person":     (255, 180,   0),
+        "car":        (0,   220,   0),
+        "motorcycle": (0,   220, 220),
+        "truck":      (180,  80,   0),
+    }
+
+    LOCK_AFTER_SECONDS = 8.0       # [NEW] رُفع من 5.0 إلى 8.0 لتثبيت الكلاس بدقة أعلى
+    MIN_W_RATIO = 0.025
+    MIN_H_RATIO = 0.025
+    MAX_AREA_R  = 0.40
+
+    # ── إعدادات كشف الحوادث ──────────────────────────────────────────────
+    COLLISION_IOU        = 0.05   # تداخل الصناديق = اصطدام
+    PROXIMITY_PX         = 90     # مسافة التقارب الخطير
+    SAFE_SPEED           = 2.0    # سرعة آمنة (بكسل/فريم)
+
+    # توقف طويل — يُكتشف فقط إذا كانت سيارة أخرى تتحرك بالقرب
+    LONG_STOP_SECONDS    = 8.0    # ثوانٍ قبل اعتباره توقفاً طويلاً
+    LONG_STOP_NEARBY_PX  = 200    # يبحث عن سيارة متحركة في هذا النطاق
+    LONG_STOP_MIN_SPEED  = 3.0    # السيارة المجاورة يجب أن تتحرك بهذه السرعة
+
+    # منع تكرار التنبيهات — cooldown بالفريمات
+    EVENT_COOLDOWN = 45           # 1.5 ثانية عند 30fps
+
+    # [NEW] checkpoint — حفظ تلقائي كل كذا فريم لمنع ضياع البيانات
+    CHECKPOINT_EVERY = 500        # يحفظ كل 500 فريم
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# BOTSORT CONFIG
+# ─────────────────────────────────────────────────────────────────────────────
+def make_botsort(cfg: Config) -> str:
+    p = Path("botsort.yaml")
+    p.write_text(
+        "tracker_type: botsort\n"
+        f"track_high_thresh: {cfg.CONF}\n"
+        "track_low_thresh: 0.10\n"
+        f"new_track_thresh: {cfg.CONF + 0.05:.2f}\n"
+        "track_buffer: 120\n"
+        "match_thresh: 0.85\n"
+        "fuse_score: True\n"
+        "with_reid: True\n"
+        "model: auto\n"
+        "proximity_thresh: 0.5\n"
+        "appearance_thresh: 0.25\n"
+        "gmc_method: sparseOptFlow\n"
+    )
+    return str(p)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TIME LOCKER
+# ─────────────────────────────────────────────────────────────────────────────
+class TimeLocker:
+    def __init__(self, cfg: Config, fps: float):
+        self.lock_frames = int(fps * cfg.LOCK_AFTER_SECONDS)
+        self._first  : Dict[int, int]   = {}
+        self._obs    : Dict[int, deque] = {}
+        self._locked : Dict[int, int]   = {}
+
+    def get(self, tid: int, cls: int, frame_idx: int) -> Tuple[int, bool]:
+        if tid not in self._first:
+            self._first[tid] = frame_idx
+            self._obs[tid]   = deque()
+        if tid in self._locked:
+            return self._locked[tid], True
+        self._obs[tid].append(cls)
+        if frame_idx - self._first[tid] >= self.lock_frames:
+            counts = defaultdict(int)
+            for c in self._obs[tid]:
+                counts[c] += 1
+            best = max(counts, key=counts.__getitem__)
+            self._locked[tid] = best
+            return best, True
+        counts = defaultdict(int)
+        for c in self._obs[tid]:
+            counts[c] += 1
+        return max(counts, key=counts.__getitem__), False
+
+    def cleanup(self, frame_idx: int, max_age: int = 300):
+        old = [t for t, f in self._first.items()
+               if frame_idx - f > max_age and t in self._locked]
+        for t in old:
+            self._first.pop(t, None)
+            self._obs.pop(t, None)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SPEED TRACKER
+# ─────────────────────────────────────────────────────────────────────────────
+class SpeedTracker:
+    def __init__(self):
+        self._prev   : Dict[int, Tuple[float,float]] = {}
+        self._speeds : Dict[int, float]              = {}
+        self._alpha  = 0.6
+
+    def update(self, tid: int, cx: float, cy: float) -> float:
+        if tid in self._prev:
+            px, py = self._prev[tid]
+            raw  = math.sqrt((cx-px)**2 + (cy-py)**2)
+            raw  = 0.0 if raw < 0.3 else raw
+            prev = self._speeds.get(tid, 0.0)
+            s    = self._alpha * raw + (1 - self._alpha) * prev
+        else:
+            s = 0.0
+        self._prev[tid]   = (cx, cy)
+        self._speeds[tid] = s
+        return s
+
+    def get(self, tid: int) -> float:
+        return self._speeds.get(tid, 0.0)
+
+    def cleanup(self, active_ids: set):
+        for tid in list(self._prev.keys()):
+            if tid not in active_ids:
+                self._prev.pop(tid, None)
+                self._speeds.pop(tid, None)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ACCIDENT DETECTOR — مع Cooldown لمنع التكرار
+# ─────────────────────────────────────────────────────────────────────────────
+class AccidentDetector:
+
+    def __init__(self, cfg: Config, fps: float):
+        self.cfg              = cfg
+        self.long_stop_frames = int(fps * cfg.LONG_STOP_SECONDS)
+        self._stop_since      : Dict[int, int]               = {}
+        self._prev_centers    : Dict[int, Tuple[float,float]] = {}
+        # cooldown: {event_key → آخر فريم طُبع فيه}
+        self._last_reported   : Dict[str, int]               = {}
+
+    def _cooled(self, key: str, frame_idx: int) -> bool:
+        """يعيد True إذا مضت فترة الـ cooldown ويسجل الفريم"""
+        last = self._last_reported.get(key, -9999)
+        if frame_idx - last >= self.cfg.EVENT_COOLDOWN:
+            self._last_reported[key] = frame_idx
+            return True
+        return False
+
+    @staticmethod
+    def _iou(b1, b2) -> float:
+        x1=max(b1[0],b2[0]); y1=max(b1[1],b2[1])
+        x2=min(b1[2],b2[2]); y2=min(b1[3],b2[3])
+        inter=max(0,x2-x1)*max(0,y2-y1)
+        a1=max(1,(b1[2]-b1[0])*(b1[3]-b1[1]))
+        a2=max(1,(b2[2]-b2[0])*(b2[3]-b2[1]))
+        return inter/(a1+a2-inter)
+
+    @staticmethod
+    def _dist(c1, c2) -> float:
+        return math.sqrt((c1[0]-c2[0])**2+(c1[1]-c2[1])**2)
+
+    def check_collision(self, v1, v2, frame_idx) -> Optional[dict]:
+        if self._iou(v1["bbox"], v2["bbox"]) >= self.cfg.COLLISION_IOU:
+            key = f"col_{min(v1['id'],v2['id'])}_{max(v1['id'],v2['id'])}"
+            if not self._cooled(key, frame_idx):
+                return None
+            return {
+                "level"  : "HIGH",
+                "type"   : "COLLISION",
+                "ids"    : [v1["id"], v2["id"]],
+                "message": f"🔴 اصطدام — ID:{v1['id']}({v1['cls_name']}) & ID:{v2['id']}({v2['cls_name']})",
+                "color"  : (0, 0, 255),
+            }
+        return None
+
+    def check_proximity(self, v1, v2, frame_idx) -> Optional[dict]:
+        if self._dist(v1["center"], v2["center"]) < self.cfg.PROXIMITY_PX:
+            # تجاهل إذا كلاهما بطيء (مثل إشارة المرور)
+            if v1["speed"] < self.cfg.SAFE_SPEED and v2["speed"] < self.cfg.SAFE_SPEED:
+                return None
+            key = f"prox_{min(v1['id'],v2['id'])}_{max(v1['id'],v2['id'])}"
+            if not self._cooled(key, frame_idx):
+                return None
+            return {
+                "level"  : "MEDIUM",
+                "type"   : "DANGEROUS_PROXIMITY",
+                "ids"    : [v1["id"], v2["id"]],
+                "message": f"🟠 تقارب خطير — ID:{v1['id']} & ID:{v2['id']}",
+                "color"  : (0, 165, 255),
+            }
+        return None
+
+    def check_long_stop(self, v: dict, vehicles: List[dict], frame_idx: int) -> Optional[dict]:
+        """
+        توقف طويل يُكتشف فقط إذا:
+        1. السيارة واقفة أكثر من LONG_STOP_SECONDS
+        2. يوجد سيارة أخرى تتحرك بالقرب منها
+        هذا يمنع الإنذار الكاذب عند الوقوف في الإشارة
+        """
+        tid = v["id"]
+        cx, cy = v["center"]
+
+        if tid in self._prev_centers:
+            px, py = self._prev_centers[tid]
+            dist = math.sqrt((cx-px)**2+(cy-py)**2)
+            if dist < self.cfg.SAFE_SPEED:
+                if tid not in self._stop_since:
+                    self._stop_since[tid] = frame_idx
+                frames_stopped = frame_idx - self._stop_since[tid]
+
+                if frames_stopped >= self.long_stop_frames:
+                    # ── شرط: يوجد سيارة متحركة بالقرب ──────────────────
+                    nearby_moving = any(
+                        other["id"] != tid
+                        and other["speed"] >= self.cfg.LONG_STOP_MIN_SPEED
+                        and self._dist(v["center"], other["center"]) <= self.cfg.LONG_STOP_NEARBY_PX
+                        for other in vehicles
+                    )
+                    if nearby_moving:
+                        key = f"stop_{tid}"
+                        if not self._cooled(key, frame_idx):
+                            return None
+                        return {
+                            "level"  : "HIGH",
+                            "type"   : "LONG_STOP",
+                            "ids"    : [tid],
+                            "message": f"🔴 توقف خطير — ID:{tid}({v['cls_name']}) واقف وسيارة تقترب",
+                            "color"  : (0, 0, 200),
+                        }
+            else:
+                self._stop_since.pop(tid, None)
+
+        self._prev_centers[tid] = (cx, cy)
+        return None
+
+    def analyze(self, vehicles: List[dict], frame_idx: int) -> List[dict]:
+        events = []
+
+        # فحص التوقف الطويل
+        for v in vehicles:
+            r = self.check_long_stop(v, vehicles, frame_idx)
+            if r:
+                events.append(r)
+
+        # فحص الأزواج
+        for i in range(len(vehicles)):
+            for j in range(i+1, len(vehicles)):
+                v1, v2 = vehicles[i], vehicles[j]
+                r = self.check_collision(v1, v2, frame_idx)
+                if r:
+                    events.append(r)
+                    continue
+                r = self.check_proximity(v1, v2, frame_idx)
+                if r:
+                    events.append(r)
+
+        priority = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
+        events.sort(key=lambda x: priority.get(x["level"], 3))
+        return events
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DRAW
+# ─────────────────────────────────────────────────────────────────────────────
+def draw(frame, vehicles, events, cfg):
+    accident_ids = set()
+    for e in events:
+        if e["level"] in ("HIGH", "MEDIUM"):
+            for vid in e.get("ids", []):
+                accident_ids.add(vid)
+
+    for v in vehicles:
+        x1, y1, x2, y2 = v["bbox"]
+        tid = v["id"]
+
+        color = (0, 0, 255) if tid in accident_ids else cfg.COLORS.get(v["cls_name"], (200,200,200))
+        thick = 3 if tid in accident_ids else 2
+
+        cv2.rectangle(frame, (x1,y1), (x2,y2), color, thick)
+
+        label = f"ID:{tid} {v['cls_name']} {v['conf']:.0%}"
+        font  = cv2.FONT_HERSHEY_SIMPLEX
+        scale = 0.50
+        (tw, th), _ = cv2.getTextSize(label, font, scale, 1)
+        w = x2 - x1
+        if tw > w - 4:
+            scale = max(0.30, scale * (w-4) / max(tw,1))
+            (tw, th), _ = cv2.getTextSize(label, font, scale, 1)
+
+        ty = y1-4 if y1-th-8 >= 0 else y1+th+6
+        cv2.rectangle(frame, (x1, ty-th-3), (x1+tw+4, ty+2), color, -1)
+        cv2.putText(frame, label, (x1+2, ty), font, scale, (0,0,0), 1, cv2.LINE_AA)
+
+    # شريط الأحداث في الأعلى
+    high = [e for e in events if e["level"] == "HIGH"]
+    med  = [e for e in events if e["level"] == "MEDIUM"]
+    if high:
+        cv2.rectangle(frame, (0,0), (frame.shape[1], 45), (0,0,180), -1)
+        cv2.putText(frame, high[0]["message"], (10,30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.72, (255,255,255), 2, cv2.LINE_AA)
+    elif med:
+        cv2.rectangle(frame, (0,0), (frame.shape[1], 45), (0,100,200), -1)
+        cv2.putText(frame, med[0]["message"], (10,30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.72, (255,255,255), 2, cv2.LINE_AA)
+
+    return frame
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# [NEW] دالة مساعدة لتحويل track_log إلى JSON قابل للحفظ
+# (tuples تتحول إلى lists لأن JSON لا يدعم tuples)
+# ─────────────────────────────────────────────────────────────────────────────
+def serialize_log(track_log: Dict[int, List[dict]]) -> dict:
+    """[NEW] تحويل track_log لصيغة JSON-safe — tuples → lists"""
+    serialized = {}
+    for frame_idx, vehicles in track_log.items():
+        serialized[str(frame_idx)] = [
+            {
+                **v,
+                "bbox"  : list(v["bbox"]),    # tuple → list
+                "center": list(v["center"]),  # tuple → list
+            }
+            for v in vehicles
+        ]
+    return serialized
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MAIN
+# ─────────────────────────────────────────────────────────────────────────────
+def run() -> Dict[int, List[dict]]:
+    cfg = Config()
+
+    print("📁 ارفع الفيديو...")
+    uploaded   = files.upload()
+    video_path = next(iter(uploaded.keys()))
+
+    model       = YOLO(cfg.MODEL)
+    tracker_cfg = make_botsort(cfg)
+
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise RuntimeError(f"لا يمكن فتح: {video_path}")
+
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30
+    W   = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))  or 1280
+    H   = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 720
+
+    locker   = TimeLocker(cfg, fps)
+    speeder  = SpeedTracker()
+    detector = AccidentDetector(cfg, fps)
+
+    out = cv2.VideoWriter(
+        "output.mp4",
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        fps, (W, H),
+    )
+
+    print(f"🚀 {cfg.MODEL} | BoT-SORT | {W}×{H} | {fps:.0f}fps")
+
+    min_w    = W * cfg.MIN_W_RATIO
+    min_h    = H * cfg.MIN_H_RATIO
+    max_area = W * H * cfg.MAX_AREA_R
+
+    track_log  : Dict[int, List[dict]] = {}
+    all_events : List[dict]            = []   # [NEW] تجميع كل الأحداث للإحصائيات
+    frame_idx  = 0
+    t0         = time.time()
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        frame_idx += 1
+
+        result = model.track(
+            frame,
+            persist = True,
+            tracker = tracker_cfg,
+            conf    = cfg.CONF,
+            iou     = cfg.IOU,
+            imgsz   = cfg.INPUT_SIZE,
+            classes = cfg.CLASSES,
+            verbose = False,
+        )[0]
+
+        vehicles   : List[dict] = []
+        active_ids : set        = set()
+
+        if result.boxes is not None and result.boxes.id is not None:
+            for box, tid, conf, cls in zip(
+                result.boxes.xyxy.cpu().numpy(),
+                result.boxes.id.cpu().numpy().astype(int),
+                result.boxes.conf.cpu().numpy(),
+                result.boxes.cls.cpu().numpy().astype(int),
+            ):
+                x1, y1, x2, y2 = map(int, box)
+                w, h = x2-x1, y2-y1
+                if w < min_w or h < min_h or w*h > max_area:
+                    continue
+                if int(cls) not in cfg.NAMES:
+                    continue
+
+                stable_cls, locked = locker.get(int(tid), int(cls), frame_idx)
+                name = cfg.NAMES.get(stable_cls, "unknown")
+                cx, cy = (x1+x2)/2.0, (y1+y2)/2.0
+                speed  = speeder.update(int(tid), cx, cy)
+                active_ids.add(int(tid))
+
+                vehicles.append({
+                    "id"        : int(tid),
+                    "cls_id"    : int(stable_cls),
+                    "cls_name"  : name,
+                    "locked"    : bool(locked),
+                    "bbox"      : (x1, y1, x2, y2),
+                    "center"    : (cx, cy),
+                    "conf"      : float(conf),
+                    "speed"     : speed,
+                    "frame_idx" : frame_idx,
+                    "timestamp" : round(frame_idx / fps, 3),  # [NEW] وقت بالثواني
+                    "w"         : w,
+                    "h"         : h,
+                })
+
+        speeder.cleanup(active_ids)
+
+        events = detector.analyze(vehicles, frame_idx)
+
+        # طباعة فقط عند وجود حدث جديد (بعد cooldown)
+        for e in events:
+            if e["level"] == "HIGH":
+                print(f"🔴 فريم {frame_idx}: {e['message']}")
+            elif e["level"] == "MEDIUM":
+                print(f"🟠 فريم {frame_idx}: {e['message']}")
+            all_events.append(e)   # [NEW] تجميع الأحداث
+
+        frame = draw(frame, vehicles, events, cfg)
+        out.write(frame)
+
+        track_log[frame_idx] = vehicles
+
+        if frame_idx % 300 == 0:
+            locker.cleanup(frame_idx)
+
+        # ── [NEW] Checkpoint — حفظ تلقائي كل CHECKPOINT_EVERY فريم ──────
+        if frame_idx % cfg.CHECKPOINT_EVERY == 0:
+            ckpt_path = f"track_log_checkpoint_{frame_idx}.json"
+            with open(ckpt_path, "w", encoding="utf-8") as f:
+                json.dump(serialize_log(track_log), f, ensure_ascii=False)
+            print(f"💾 [Checkpoint] حُفظ حتى فريم {frame_idx} → {ckpt_path}")
+
+        if frame_idx % 100 == 0:
+            e_t = time.time() - t0
+            print(f"   فريم {frame_idx:5d} | {frame_idx/e_t:5.1f} FPS | مسارات: {len(vehicles)}")
+
+    cap.release()
+    out.release()
+    e_t = time.time() - t0
+
+    # ── [NEW] إحصائيات نهائية ─────────────────────────────────────────────
+    total_ids    = len(set(v["id"] for frames in track_log.values() for v in frames))
+    high_events  = sum(1 for e in all_events if e["level"] == "HIGH")
+    med_events   = sum(1 for e in all_events if e["level"] == "MEDIUM")
+    cls_counts   = defaultdict(set)
+    for frames in track_log.values():
+        for v in frames:
+            cls_counts[v["cls_name"]].add(v["id"])
+
+    print(f"\n{'='*55}")
+    print(f"✅ انتهت المعالجة")
+    print(f"   إجمالي الفريمات       : {frame_idx}")
+    print(f"   الوقت الكلي           : {e_t:.1f} ثانية")
+    print(f"   متوسط السرعة          : {frame_idx/e_t:.1f} FPS")
+    print(f"   إجمالي مركبات مُتتبعة : {total_ids}")
+    for cls_name, ids in cls_counts.items():
+        print(f"      • {cls_name}: {len(ids)}")
+    print(f"   أحداث HIGH (خطرة)     : {high_events}")
+    print(f"   أحداث MEDIUM (تحذير)  : {med_events}")
+    print(f"{'='*55}\n")
+
+    # ── [NEW] حفظ track_log النهائي كـ JSON وتحميله ───────────────────────
+    final_log_path = "track_log_final.json"
+    with open(final_log_path, "w", encoding="utf-8") as f:
+        json.dump(serialize_log(track_log), f, ensure_ascii=False)
+    print(f"💾 track_log محفوظ → {final_log_path}")
+
+    files.download("output.mp4")
+    files.download(final_log_path)   # [NEW] تحميل تلقائي لملف البيانات
+
+    return track_log
+
+
+if __name__ == "__main__":
+    log = run()
