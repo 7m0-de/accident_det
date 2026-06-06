@@ -3,7 +3,7 @@
 [
 ![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)
 
-](https://colab.research.google.com/github/7m0-de/accident_det/blob/main/training/YOLOv10_Training.ipynb)
+](https://colab.research.google.com/github/7m0-de/accident_det/blob/main/Training/YOLOv10_Training.ipynb)
 
 ##  Overview
 This project aims to build an AI system that detects traffic accidents from video footage using computer vision and intelligent logic.
