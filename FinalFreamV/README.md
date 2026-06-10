@@ -33,6 +33,10 @@ An end-to-end, high-performance intelligent traffic accident and hazard detectio
 ```bash
 pip install -r requirements.txt
 ```
+or in cmd
+```bash
+py -m pip install -r requirements.txt
+```
 
 > [!NOTE]
 > إذا كنت تستخدم بطاقة رسوميات Nvidia وتريد تفعيل تسريع المعالجة بـ CUDA، يرجى تثبيت PyTorch يدوياً عبر:
