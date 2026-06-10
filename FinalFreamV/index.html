@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Traffic Accident Detection - Ultimate Dashboard</title>
+    
+    
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+
+    <link rel="stylesheet" href="static/css/style.css">
+</head>
+<body>
+
+    
+    <div class="alert-flare-banner" id="alertFlare">
+        <i class="fa-solid fa-triangle-exclamation"></i>
+        <span id="alertFlareText">Critical Traffic Incident Detected!</span>
+        <button class="flare-close-btn" id="closeFlare"><i class="fa-solid fa-xmark"></i></button>
+    </div>
+
+    
+    <div class="alarm-flash-overlay"></div>
+
+    
+    <div class="collision-alarm-modal" id="collisionAlarmModal" style="display: none;">
+        <div class="alarm-modal-content">
+            <div class="alarm-scanner-line"></div>
+            <div class="alarm-header">
+                <i class="fa-solid fa-triangle-exclamation alarm-blink-icon"></i>
+                <span data-i18n="alarmHeader">CRITICAL COLLISION ALARM</span>
+            </div>
+            <div class="alarm-body">
+                <div class="alarm-danger-badge" data-i18n="alarmTitle">TRAFFIC ACCIDENT DETECTED</div>
+                <p class="alarm-desc" id="alarmModalDesc">The AI neural pipeline has confirmed a high-probability collision event on the road viewport.</p>
+                <div class="alarm-telemetry-grid">
+                    <div class="telemetry-box">
+                        <span class="tel-label" data-i18n="accidentLabel">Confirmed Accidents</span>
+                        <span class="tel-val" id="alarmModalCount">0</span>
+                    </div>
+                    <div class="telemetry-box">
+                        <span class="tel-label" data-i18n="fpsLabel">Processing Speed</span>
+                        <span class="tel-val" id="alarmModalFps">0 FPS</span>
+                    </div>
+                </div>
+            </div>
+            <div class="alarm-footer">
+                <button class="alarm-btn jump" id="alarmModalJumpBtn">
+                    <i class="fa-solid fa-play"></i> <span data-i18n="jumpButton">Jump to Incident</span>
+                </button>
+                <button class="alarm-btn close" id="alarmModalCloseBtn">
+                    <i class="fa-solid fa-check"></i> <span data-i18n="closeButton">Acknowledge Alert</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    
+    <div class="landing-stage" id="landingPage">
+        <canvas id="particlesCanvas"></canvas>
+        
+        
+        <div style="position: absolute; top: 20px; right: 20px; z-index: 10000; display: flex; gap: 12px;">
+            <button class="back-portal-btn" id="colabSetupBtn"><i class="fa-solid fa-circle-question"></i> Colab Setup</button>
+            
+        </div>
+
+        <div class="landing-content">
+            <div class="glow-sphere blob-1"></div>
+            <div class="glow-sphere blob-2"></div>
+            
+            <header class="landing-header animate-fade-in">
+                <div class="landing-logo-container">
+                    <i class="fa-solid fa-shield-halved"></i>
+                </div>
+                <h1 class="landing-title glitch-text" data-text="ACCIDENT DETECTION COMMAND PORTAL" data-i18n="title">ACCIDENT DETECTION COMMAND PORTAL</h1>
+                <p class="landing-subtitle" data-i18n="subTitle">High-fidelity multi-agent AI framework for traffic video intelligence & collision prognosis</p>
+            </header>
+
+            <div class="landing-portal-grid animate-fade-in delay-1">
+                
+                <div class="portal-card">
+                    <div class="portal-card-header">
+                        <i class="fa-solid fa-server"></i>
+                        <span data-i18n="serverTitle">AI Pipeline Console</span>
+                    </div>
+                    <p class="portal-card-desc" data-i18n="serverDesc">Link to your high-performance GPU backend server (Colab, LocalHost, or remote VPS) to execute live video streams and neural network batch operations.</p>
+                    <div class="portal-input-group">
+                        <input type="text" id="landingBackendUrlInput" placeholder="Server URL (e.g. https://xxxx.localtunnel.me)" class="landing-input">
+                        <button class="portal-btn connect" id="landingConnectBtn" data-i18n="connectBtn"><i class="fa-solid fa-bolt"></i> Establish Connection</button>
+                    </div>
+                </div>
+
+                
+                
+                <div class="portal-card highlight" style="display: none !important;">
+                    <div class="portal-card-header">
+                        <i class="fa-solid fa-chalkboard-user"></i>
+                        <span data-i18n="demoTitle">Simulation Workspace</span>
+                    </div>
+                    <p class="portal-card-desc" data-i18n="demoDesc">No active server? Launch the interactive mock simulation environment to evaluate the telemetry dashboards, logging streams, visual HUD controls, and audio warnings with embedded test pattern feeds.</p>
+                    <button class="portal-btn demo" id="landingDemoBtn" data-i18n="demoBtn"><i class="fa-solid fa-play"></i> Initialize Mock Simulator</button>
+                </div>
+            </div>
+
+            
+            <section class="tech-specs-section animate-fade-in delay-2">
+                <h3 class="specs-title" data-i18n="specsTitle"><i class="fa-solid fa-microchip"></i> System Core Pipeline Architecture</h3>
+                <div class="specs-grid">
+                    <div class="spec-item">
+                        <span class="spec-icon"><i class="fa-solid fa-brain"></i></span>
+                        <div class="spec-info">
+                            <h4 data-i18n="yoloTitle">YOLOv10 Neural Engine</h4>
+                            <p data-i18n="yoloDesc">Real-time vehicle detection mapping (Cars, Trucks, Buses, Motorcycles) at up to 60 FPS under varying weather and illumination.</p>
+                        </div>
+                    </div>
+                    <div class="spec-item">
+                        <span class="spec-icon"><i class="fa-solid fa-route"></i></span>
+                        <div class="spec-info">
+                            <h4 data-i18n="trackerTitle">BoT-SORT & Kalman Trajectory</h4>
+                            <p data-i18n="trackerDesc">Multi-object visual tracking using global motion compensation (GMC) and motion state predictive correction to maintain identities.</p>
+                        </div>
+                    </div>
+                    <div class="spec-item">
+                        <span class="spec-icon"><i class="fa-solid fa-hourglass-half"></i></span>
+                        <div class="spec-info">
+                            <h4 data-i18n="ttcTitle">Kinematic TTC Analysis</h4>
+                            <p data-i18n="ttcDesc">Calculates relative velocity, closing rates, and time-to-collision (TTC) bounds to identify immediate threat windows.</p>
+                        </div>
+                    </div>
+                    <div class="spec-item">
+                        <span class="spec-icon"><i class="fa-solid fa-diagram-project"></i></span>
+                        <div class="spec-info">
+                            <h4 data-i18n="bayesTitle">Bayesian Decision Fusion</h4>
+                            <p data-i18n="bayesDesc">Fuses spatial coordinates, decelerations, and anomalies using probability trees to eliminate false alarms from traffic convoys.</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </div>
+    </div>
+
+    
+    <div id="dashboardApp" style="display: none; width: 100%;">
+        <div class="dashboard-container">
+            
+            
+            <header class="main-header">
+                <div class="header-left">
+                    <div class="brand-logo-container">
+                        <i class="fa-solid fa-triangle-exclamation"></i>
+                    </div>
+                    <div class="header-title">
+                        <h1 data-i18n="dashTitle">Smart Traffic Accident Detection System</h1>
+                        <div class="header-status">
+                            <span class="status-dot" id="statusDot"></span>
+                            <span class="status-label" id="statusLabel" data-i18n="awaitConn">Awaiting connection...</span>
+                        </div>
+                    </div>
+                </div>
+
+                
+                <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+                    
+                    <button class="back-portal-btn" id="backToPortalBtn" data-i18n="exitBtn"><i class="fa-solid fa-right-from-bracket"></i> Exit to Portal</button>
+                    <div class="backend-connector">
+                        <input type="text" id="backendUrlInput" class="backend-input" placeholder="Colab URL (e.g. https://xxxx.localtunnel.me)">
+                        <button class="connect-btn" id="connectBackendBtn" data-i18n="connectServerBtn"><i class="fa-solid fa-link"></i> Connect Server</button>
+                    </div>
+                </div>
+            </header>
+
+        
+        <section class="counters-bar">
+            <div class="counter-card">
+                <span class="counter-label" data-i18n="fpsLabel">Processing Performance</span>
+                <div class="counter-value-container">
+                    <span class="counter-value" id="fpsCounter">--</span>
+                    <span class="counter-unit">FPS</span>
+                </div>
+            </div>
+            <div class="counter-card">
+                <span class="counter-label" data-i18n="trackedLabel">Unique Vehicles Tracked</span>
+                <div class="counter-value-container">
+                    <span class="counter-value" id="detectionsCounter">0</span>
+                    <span class="counter-unit">total</span>
+                </div>
+            </div>
+            <div class="counter-card critical">
+                <span class="counter-label" data-i18n="accidentLabel">Confirmed Accidents</span>
+                <div class="counter-value-container">
+                    <span class="counter-value" id="accidentsCounter">0</span>
+                    <span class="counter-unit">critical events</span>
+                </div>
+            </div>
+        </section>
+
+        
+        <main class="main-layout">
+            
+            
+            <div class="video-stage-column">
+                <div class="panel video-stage-panel">
+                    <div class="panel-header">
+                        <h3 data-i18n="playerTitle"><i class="fa-solid fa-video"></i> Processed Video Analysis Player</h3>
+                        <span class="badge-live" id="streamBadge">OFFLINE</span>
+                    </div>
+                    
+                    
+                    
+                    <div class="cctv-selector-bar" style="display: none !important;">
+                        <div class="cctv-feeds" style="display: flex; gap: 6px;">
+                            <button class="cctv-feed-btn active" data-feed="cctv-1"><i class="fa-solid fa-video"></i> CCTV-01 [HWY]</button>
+                            <button class="cctv-feed-btn" data-feed="cctv-2"><i class="fa-solid fa-video"></i> CCTV-02 [INT]</button>
+                            <button class="cctv-feed-btn" data-feed="cctv-3"><i class="fa-solid fa-video"></i> CCTV-03 [TUN]</button>
+                        </div>
+                        <div class="cctv-rec-status" style="display: flex; align-items: center; gap: 8px; font-family: 'JetBrains Mono', monospace; font-size: 0.68rem; color: var(--text-muted);">
+                            <span style="display: inline-block; width: 6px; height: 6px; border-radius: 50%; background-color: var(--alert-red); animation: pulse-dot 1s infinite;" id="cctvRecDot"></span>
+                            <span id="cctvRecText">REC [CCTV-01] - FPS: 28.5</span>
+                        </div>
+                    </div>
+                    
+                    <div class="video-wrapper-container">
+                        <div class="video-viewport" id="videoViewport">
+                            
+                            
+                            <div class="cyber-grid-overlay" style="display: none !important;"></div>
+                            <div class="scanlines-overlay" style="display: none !important;"></div>
+
+                            
+                            <div class="hud-reticle r1" id="hudReticle1" style="display: none; position: absolute; border: 1.5px dashed var(--accent-cyan); width: 65px; height: 65px; pointer-events: none; z-index: 4; box-shadow: 0 0 12px rgba(0, 229, 255, 0.4); border-radius: 4px; transition: transform 0.5s ease-out;">
+                                <span style="position: absolute; top: -14px; left: 0; font-family: 'JetBrains Mono', monospace; font-size: 8px; color: var(--accent-cyan); background-color: rgba(2,3,7,0.75); padding: 1px 4px; border-radius: 2px;">TRACKING ID: #04</span>
+                            </div>
+                            <div class="hud-reticle r2" id="hudReticle2" style="display: none; position: absolute; border: 1.5px solid var(--alert-red); width: 85px; height: 85px; pointer-events: none; z-index: 4; box-shadow: 0 0 15px rgba(255, 51, 102, 0.45); border-radius: 4px; transition: transform 0.5s ease-out;">
+                                <span style="position: absolute; top: -14px; left: 0; font-family: 'JetBrains Mono', monospace; font-size: 8px; color: var(--alert-red); background-color: rgba(2,3,7,0.75); padding: 1px 4px; border-radius: 2px; font-weight: bold;">CRITICAL IMPACT</span>
+                            </div>
+                            <div class="hud-crosshair-center" id="hudCrosshair" style="display: none; position: absolute; width: 42px; height: 42px; pointer-events: none; z-index: 4; transition: transform 0.5s ease-out;">
+                                <div style="position: absolute; left: 20px; top: 0; width: 2px; height: 42px; background-color: rgba(0,229,255,0.45);"></div>
+                                <div style="position: absolute; left: 0; top: 20px; width: 42px; height: 2px; background-color: rgba(0,229,255,0.45);"></div>
+                                <div style="position: absolute; left: 16px; top: 16px; width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--accent-cyan); box-shadow: 0 0 10px var(--accent-cyan);"></div>
+                            </div>
+
+                            
+                            <video id="resultVideo" controls preload="auto" playsinline muted></video>
+
+                            
+                            <div class="video-error-overlay" id="videoErrorOverlay">
+                                <i class="fa-solid fa-circle-exclamation"></i>
+                                <h4>Video Cannot Play in Browser</h4>
+                                <p id="videoErrorMsg">The video codec (mp4v) is not supported by your browser. This happens when ffmpeg is not available on the server. Please download the video directly using the button below.</p>
+                                <a id="videoErrorDlBtn" href="#" class="video-error-dl-btn" download>
+                                    <i class="fa-solid fa-download"></i> Download Processed Video
+                                </a>
+                            </div>
+
+                            
+                            <div class="loading-spinner-overlay" id="videoSpinner">
+                                <div class="custom-spinner"></div>
+                                <span class="spinner-label">Uploading file to server...</span>
+                            </div>
+
+                            
+                            <div class="progress-overlay" id="progressOverlay">
+                                <i class="fa-solid fa-circle-notch fa-spin" style="font-size: 3rem; color: var(--accent-cyan); margin-bottom: 10px;"></i>
+                                <h4>AI Tracking Analysis in Progress</h4>
+                                <div class="progress-percentage" id="progressPercent">0%</div>
+                                <div class="progress-bar-container">
+                                    <div class="progress-bar-fill" id="progressBarFill"></div>
+                                </div>
+                                <div class="progress-stats-grid">
+                                    <div class="progress-stat-card">
+                                        Frames Processed
+                                        <span class="value" id="progFrameVal">0 / 0</span>
+                                    </div>
+                                    <div class="progress-stat-card">
+                                        Processing Speed
+                                        <span class="value" id="progFpsVal">-- FPS</span>
+                                    </div>
+                                    <div class="progress-stat-card">
+                                        Estimated Time
+                                        <span class="value" id="progEtaVal">-- s</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            
+                            <div class="stream-offline-overlay" id="streamErrorOverlay">
+                                <i class="fa-solid fa-circle-exclamation"></i>
+                                <h4>Server Pipeline Awaiting Video</h4>
+                                <p>Please connect to your Colab backend server using the input field above, and drag and drop a traffic video file on the right side to start batch AI processing.</p>
+                            </div>
+
+                        </div>
+
+                        
+                        <div class="video-stage-controls">
+                            <div class="controls-left">
+                                
+                                <button class="control-btn" id="audioToggleBtn"><i class="fa-solid fa-volume-high"></i> Audio Alerts</button>
+                            </div>
+                            <div class="controls-right" style="display: flex; gap: 16px; font-family: 'JetBrains Mono', monospace; font-size: 0.68rem; color: var(--text-muted); align-items: center;">
+                                <div class="health-stat" title="API Roundtrip Latency"><i class="fa-solid fa-bolt" style="color: var(--accent-cyan);"></i> Latency: <span id="healthPing" style="color: #ffffff; font-weight: bold;">--</span>ms</div>
+                                <div class="health-stat" title="GPU Thermal Load"><i class="fa-solid fa-temperature-three-quarters" style="color: var(--warn-amber);"></i> GPU: <span id="healthGpuTemp" style="color: #ffffff; font-weight: bold;">--</span>°C</div>
+                                <div class="health-stat" title="GPU CUDA Load"><i class="fa-solid fa-microchip" style="color: var(--success-green);"></i> VRAM: <span id="healthVram" style="color: #ffffff; font-weight: bold;">--</span>%</div>
+                            </div>
+                        </div>
+
+                        
+                        <div class="class-legend-bar">
+                            <div class="legend-item">
+                                <span class="legend-indicator" style="background-color: var(--class-vehicle);"></span>
+                                <span data-i18n="legendVehicle">Vehicle</span>
+                            </div>
+                            <div class="legend-item">
+                                <span class="legend-indicator" style="background-color: var(--class-motorcycle);"></span>
+                                <span data-i18n="legendMotorcycle">Motorcycle</span>
+                            </div>
+                            <div class="legend-item">
+                                <span class="legend-indicator" style="background-color: var(--class-fire);"></span>
+                                <span data-i18n="legendFire">Fire</span>
+                            </div>
+                            <div class="legend-item">
+                                <span class="legend-indicator" style="background-color: var(--class-accident);"></span>
+                                <span data-i18n="legendAccident">Accident</span>
+                            </div>
+                        </div>
+
+                    </div>
+                </div>
+            </div>
+
+            
+            <div class="control-panel-column">
+                
+                
+                <div class="uploader-panel" id="uploadPanel">
+                    <div class="uploader-title">
+                        <i class="fa-solid fa-cloud-arrow-up"></i>
+                        <span data-i18n="uploadTitle">Upload Traffic Video</span>
+                    </div>
+                    <div class="dropzone-container" id="dropzone">
+                        <input type="file" id="videoFileInput" accept="video/*">
+                        <div class="uploader-icon-container">
+                            <i class="fa-solid fa-video"></i>
+                        </div>
+                        <span class="dropzone-label" id="dropzoneText" data-i18n="dragDropLabel">Drag & drop traffic video here or click to browse</span>
+                        <span class="dropzone-hint" data-i18n="hintLabel">Supports MP4, AVI, MOV</span>
+                    </div>
+                </div>
+
+                
+                <div class="downloads-panel" id="downloadsPanel">
+                    <div class="downloads-title" style="display: flex; align-items: center; gap: 10px; font-weight: 800; font-size: 0.95rem;">
+                        <i class="fa-solid fa-download" style="color: var(--accent-cyan);"></i>
+                        <span data-i18n="downloadTitle">Download Outputs & Logs</span>
+                    </div>
+                    <div class="download-buttons-grid" style="display: flex; flex-direction: column; gap: 12px; margin-top: 10px;">
+                        <a id="dlVideoBtn" href="#" class="download-action-btn video-dl" download data-i18n="downloadVideo">
+                            <i class="fa-solid fa-file-video"></i> Download Processed Video
+                        </a>
+                        <a id="dlTxtBtn" href="#" class="download-action-btn txt-dl" download data-i18n="downloadReport">
+                            <i class="fa-solid fa-file-lines"></i> Download Incident Report (TXT)
+                        </a>
+                        <a id="dlCsvBtn" href="#" class="download-action-btn csv-dl" download data-i18n="downloadCsv">
+                            <i class="fa-solid fa-file-csv"></i> Download Tabular Logs (CSV)
+                        </a>
+                    </div>
+                    <button class="control-btn" id="newUploadBtn" style="margin-top: 10px; justify-content: center; width: 100%;" data-i18n="newVideoBtn">
+                        <i class="fa-solid fa-arrow-left"></i> Analyze New Video
+                    </button>
+                </div>
+
+                
+                
+                <div class="panel chart-panel" style="display: none !important;">
+                    <div class="panel-header" style="padding: 10px 20px;">
+                        <h3 data-i18n="chartTitle"><i class="fa-solid fa-chart-pie"></i> Category Frequency distribution</h3>
+                    </div>
+                    <div style="padding: 12px; height: 140px; display: flex; gap: 16px; background-color: rgba(9, 13, 22, 0.3);">
+                        
+                        <div style="width: 140px; display: flex; flex-direction: column; align-items: center; border-right: 1px solid rgba(255, 255, 255, 0.05); padding-right: 8px;">
+                            <span style="font-size: 0.65rem; font-weight: 700; color: var(--text-muted); margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.05em;"><i class="fa-solid fa-crosshairs"></i> Radar Scan</span>
+                            <canvas id="radarCanvas" style="width: 120px; height: 100px;"></canvas>
+                        </div>
+                        
+                        <div style="flex: 1; display: flex; flex-direction: column;">
+                            <span style="font-size: 0.65rem; font-weight: 700; color: var(--text-muted); margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.05em;"><i class="fa-solid fa-chart-area"></i> Category Volumes</span>
+                            <canvas id="analyticsChart" style="width: 100%; height: 100px;"></canvas>
+                        </div>
+                    </div>
+                </div>
+
+                
+                <div class="panel incident-panel">
+                    <div class="panel-header">
+                        <h3 class="incident-title" data-i18n="logsTitle"><i class="fa-solid fa-bell"></i> Logged Incidents Log</h3>
+                    </div>
+
+                    
+                    <div class="logs-toolbar">
+                        <div class="toolbar-top-row">
+                            <div class="filter-chips" id="filterChips">
+                                <button class="filter-chip active" data-filter="all">All</button>
+                                <button class="filter-chip" data-filter="high">High</button>
+                                <button class="filter-chip" data-filter="medium">Medium</button>
+                            </div>
+                            <div class="exporter-actions">
+                                <button class="exporter-btn" id="exportCsvBtn" title="Export CSV"><i class="fa-solid fa-file-csv"></i> CSV</button>
+                                <button class="exporter-btn" id="exportJsonBtn" title="Export JSON"><i class="fa-solid fa-file-code"></i> JSON</button>
+                            </div>
+                        </div>
+                        <div class="slider-control-row">
+                            <span data-i18n="confidenceLabel">Confidence Limit:</span>
+                            <input type="range" id="confidenceRange" min="30" max="95" value="50">
+                            <span id="confidenceVal">50%</span>
+                        </div>
+                    </div>
+
+                    
+                    <div class="alert-logs-area" id="alertLog">
+                        <div class="empty-logs-placeholder" id="emptyLogs">
+                            <i class="fa-regular fa-bell-slash"></i>
+                            <p data-i18n="emptyLogsPlaceholder">No incidents detected yet. Awaiting video analysis...</p>
+                        </div>
+                    </div>
+                </div>
+
+                
+                <div class="panel terminal-panel" style="height: 180px;">
+                    <div class="panel-header" style="padding: 8px 20px;">
+                        <h3 class="terminal-title" data-i18n="diagnosticsTitle"><i class="fa-solid fa-terminal"></i> AI Neural Diagnostics Engine</h3>
+                        <button class="exporter-btn" id="clearTerminalBtn" style="padding: 4px 8px;"><i class="fa-solid fa-trash"></i></button>
+                    </div>
+                    <div class="terminal-body" id="terminalLog" style="flex: 1; padding: 10px; font-family: 'JetBrains Mono', monospace; font-size: 0.65rem; color: #00ff66; background-color: #020307; overflow-y: auto; text-align: left; direction: ltr;">
+                    </div>
+                </div>
+
+            </div>
+
+        </main>
+    </div>
+    </div> 
+
+    
+    <script src="static/js/app.js"></script>
+
+    
+    <div class="setup-modal-overlay" id="setupModal">
+        <div class="setup-modal-content">
+            <div class="setup-modal-header">
+                <h3 data-i18n="setupModalTitle"><i class="fa-solid fa-circle-info"></i> Colab GPU Pipeline Setup</h3>
+                <button class="modal-close-btn" id="closeSetupModal"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <p class="setup-modal-desc" data-i18n="setupModalDesc">Follow these quick steps to execute the accident detection backend on Google Colab:</p>
+            <ol class="setup-steps-list">
+                <li>Open Google Colab and select a <strong>T4 GPU</strong> hardware accelerator.</li>
+                <li>Clone the repository and install requirements:
+                    <pre><code>!git clone https://github.com/ayman/Accident-Detection.git
+%cd Accident-Detection
+!pip install -r requirements.txt</code></pre>
+                </li>
+                <li>Start localtunnel to tunnel the FastAPI port:
+                    <pre><code>!npm install -g localtunnel
+!python app.py & lt --port 7860</code></pre>
+                </li>
+                <li>Copy the generated <code>https://xxxx.localtunnel.me</code> URL and paste it into the connection input.</li>
+            </ol>
+        </div>
+    </div>
+</body>
+</html>
