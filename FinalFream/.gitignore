@@ -1,0 +1,14 @@
+__pycache__/
+.pytest_cache/
+*.db
+*.onnx
+*.pt
+static/runs/run_*
+static/uploads/input_*
+tracked_output.mp4
+events.json
+events.csv
+collision_report.txt
+summary.json
+app.log
+config_override.json

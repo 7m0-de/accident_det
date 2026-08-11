@@ -1,0 +1,17 @@
+ultralytics>=8.3.0,<9.0.0
+torch>=2.3.0
+torchvision>=0.18.0
+opencv-python-headless>=4.9.0.80,<5.0.0
+fastapi>=0.115.0,<1.0.0
+uvicorn[standard]>=0.30.0,<1.0.0
+python-multipart>=0.0.9,<1.0.0
+aiofiles>=23.0.0
+numpy>=1.26.0,<3.0.0
+scikit-learn>=1.4.0,<2.0.0
+scipy>=1.12.0,<2.0.0
+imageio-ffmpeg>=0.5.1
+pyngrok>=7.2.0
+lap>=0.4.0
+onnx>=1.16.0
+onnxruntime>=1.18.0
+onnxslim>=0.1.0
